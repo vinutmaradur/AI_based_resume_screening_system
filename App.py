@@ -188,13 +188,34 @@ def show_pdf(file_path):
     st.markdown(pdf_display, unsafe_allow_html=True)
 
 # Database Connection
+from pathlib import Path
+
 def create_connection():
-    return mysql.connector.connect(
-        host="localhost",      # Change if needed (e.g., remote server)
-        user="root",  # Replace with your MySQL username
-        password="Vinut@2001",  # Replace with your MySQL password
-        database="resume_database"   # Ensure you have created this database
-    )
+    try:
+        # Save Aiven SSL certificate to a temporary file
+        ca_path = "/tmp/aiven-ca.pem"
+        Path(ca_path).write_text(st.secrets["mysql"]["ssl_ca"])
+
+        conn = mysql.connector.connect(
+            host=st.secrets["mysql"]["host"],
+            port=int(st.secrets["mysql"]["port"]),
+            user=st.secrets["mysql"]["user"],
+            password=st.secrets["mysql"]["password"],
+            database=st.secrets["mysql"]["database"],
+            ssl_ca=ca_path,
+            ssl_verify_cert=True,
+            connection_timeout=20
+        )
+
+        return conn
+
+    except mysql.connector.Error as e:
+        st.error(f"Database connection error: {e}")
+        return None
+
+    except Exception as e:
+        st.error(f"Unexpected database error: {e}")
+        return None
 conn = create_connection()
 cursor = conn.cursor()
 
@@ -231,48 +252,115 @@ def run():
     # Create table
     def create_table():
         conn = create_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS resume (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(255),
-            email VARCHAR(255),
-            mobile_number VARCHAR(20),
-            no_of_pages INT,
-            upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            Predicted_Field VARCHAR(255),
-            User_level VARCHAR(255),
-            skills TEXT,
-            recommended_skills TEXT,
-            courses TEXT
-            );
-        '''
-        )
-        conn.commit()
-        conn.close()
+
+        if conn is None:
+            st.stop()
+
+        cursor = None
+
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS resume (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255),
+                    email VARCHAR(255),
+                    mobile_number VARCHAR(20),
+                    no_of_pages INT,
+                    upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    Predicted_Field VARCHAR(255),
+                    User_level VARCHAR(255),
+                    skills TEXT,
+                    recommended_skills TEXT,
+                    courses TEXT
+                )
+            """)
+
+            conn.commit()
+
+        except mysql.connector.Error as e:
+            st.error(f"Table creation error: {e}")
+            st.stop()
+
+        finally:
+            if cursor:
+                cursor.close()
+            conn.close()
 
     # Call this function at the start
     create_table()
 
-    def save_resume_to_db(resume_data,predicted_field='',user_level=''):
+    def save_resume_to_db(resume_data, predicted_field='', user_level=''):
+
         conn = create_connection()
-        cursor = conn.cursor()
-        values = (
-            resume_data.get('name', 'Unknown'),
-            resume_data.get('email', 'N/A'),
-            resume_data.get('mobile_number', 'N/A'),
-            resume_data.get('no_of_pages', 0),
-            predicted_field,
-            user_level,
-            ', '.join(resume_data.get('skills',[])),
-            ', '.join(recommended_skills),
-            ', '.join(rec_course)
-        )
-        sql = '''INSERT INTO resume (name, email, mobile_number, no_of_pages, Predicted_Field, User_level, skills, recommended_skills, courses)
-         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)'''
-        cursor.execute(sql, values)
-        conn.commit()
-        conn.close()
+
+        if conn is None:
+            st.error("Unable to connect to the database.")
+            return False
+
+        cursor = None
+
+        try:
+            cursor = conn.cursor()
+
+            skills = resume_data.get('skills') or []
+
+            if isinstance(skills, str):
+                skills_text = skills
+            else:
+                skills_text = ', '.join(skills)
+
+            if isinstance(recommended_skills, list):
+                recommended_skills_text = ', '.join(recommended_skills)
+            else:
+                recommended_skills_text = str(recommended_skills)
+
+            if isinstance(rec_course, list):
+                courses_text = ', '.join(rec_course)
+            else:
+                courses_text = str(rec_course)
+
+            values = (
+                resume_data.get('name', 'Unknown'),
+                resume_data.get('email', 'N/A'),
+                resume_data.get('mobile_number', 'N/A'),
+                resume_data.get('no_of_pages', 0),
+                predicted_field,
+                user_level,
+                skills_text,
+                recommended_skills_text,
+                courses_text
+            )
+
+            sql = """
+                INSERT INTO resume (
+                    name,
+                    email,
+                    mobile_number,
+                    no_of_pages,
+                    Predicted_Field,
+                    User_level,
+                    skills,
+                    recommended_skills,
+                    courses
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+
+            cursor.execute(sql, values)
+            conn.commit()
+
+            return True
+
+        except mysql.connector.Error as e:
+            st.error(f"Error saving resume: {e}")
+            return False
+
+        finally:
+            if cursor:
+                cursor.close()
+            conn.close()
     
     if choice == 'User':
         st.markdown('''<h5 style='text-align: left; color: #021659;'> Upload your resume, and get smart recommendations</h5>''',
@@ -284,7 +372,10 @@ def run():
         if pdf_file is not None:
             with st.spinner('Uploading your Resume...'):
                 time.sleep(4)
-            save_image_path = './Uploaded_Resumes/'+pdf_file.name
+            os.makedirs("./Uploaded_Resumes", exist_ok=True)
+
+            save_image_path = os.path.join("./Uploaded_Resumes", pdf_file.name)
+
             with open(save_image_path, "wb") as f:
                 f.write(pdf_file.getbuffer())
             show_pdf(save_image_path)
@@ -549,8 +640,8 @@ def run():
                       mime="application/pdf"
                    )
 
-            save_resume_to_db(resume_data,reco_field,cand_level)
-            st.success("Resume saved to the database!")
+            if save_resume_to_db(resume_data, reco_field, cand_level):
+                st.success("Resume saved to the database!")
         else:
             st.warning('Upload your Resumes and Job Description Here')
     
