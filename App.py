@@ -192,22 +192,27 @@ from pathlib import Path
 
 def create_connection():
     try:
-        # Save Aiven SSL certificate to a temporary file
+        mysql_secrets = st.secrets["mysql"]
+
         ca_path = "/tmp/aiven-ca.pem"
-        Path(ca_path).write_text(st.secrets["mysql"]["ssl_ca"])
+        Path(ca_path).write_text(mysql_secrets["ssl_ca"])
 
         conn = mysql.connector.connect(
-            host=st.secrets["mysql"]["host"],
-            port=int(st.secrets["mysql"]["port"]),
-            user=st.secrets["mysql"]["user"],
-            password=st.secrets["mysql"]["password"],
-            database=st.secrets["mysql"]["database"],
+            host=mysql_secrets["host"],
+            port=int(mysql_secrets["port"]),
+            user=mysql_secrets["user"],
+            password=mysql_secrets["password"],
+            database=mysql_secrets["database"],
             ssl_ca=ca_path,
             ssl_verify_cert=True,
             connection_timeout=20
         )
 
         return conn
+
+    except KeyError as e:
+        st.error(f"Missing MySQL secret: {e}")
+        return None
 
     except mysql.connector.Error as e:
         st.error(f"Database connection error: {e}")
@@ -216,8 +221,6 @@ def create_connection():
     except Exception as e:
         st.error(f"Unexpected database error: {e}")
         return None
-conn = create_connection()
-cursor = conn.cursor()
 
 st.set_page_config(
    page_title="AI Resume Analyzer",
@@ -253,42 +256,41 @@ def run():
     def create_table():
         conn = create_connection()
 
-    if conn is None:
-        st.stop()
+        if conn is None:
+            st.stop()
 
-    cursor = None
+        cursor = None
 
-    try:
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS resume (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255),
-                email VARCHAR(255),
-                mobile_number VARCHAR(20),
-                no_of_pages INT,
-                upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                Predicted_Field VARCHAR(255),
-                User_level VARCHAR(255),
-                skills TEXT,
-                recommended_skills TEXT,
-                courses TEXT
-            )
-        """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS resume (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255),
+                    email VARCHAR(255),
+                    mobile_number VARCHAR(20),
+                    no_of_pages INT,
+                    upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    Predicted_Field VARCHAR(255),
+                    User_level VARCHAR(255),
+                    skills TEXT,
+                    recommended_skills TEXT,
+                    courses TEXT
+                )
+            """)
 
-        conn.commit()
+            conn.commit()
 
-    except mysql.connector.Error as e:
-        st.error(f"Table creation error: {e}")
-        st.stop()
+        except mysql.connector.Error as e:
+            st.error(f"Table creation error: {e}")
+            st.stop()
 
-    finally:
-        if cursor is not None:
-            cursor.close()
-        conn.close()
+        finally:
+            if cursor is not None:
+                cursor.close()
+            conn.close()
 
-    # Call this function at the start
     create_table()
 
     def save_resume_to_db(resume_data, predicted_field='', user_level=''):
@@ -311,15 +313,13 @@ def run():
             else:
                 skills_text = ', '.join(skills)
 
-            if isinstance(recommended_skills, list):
-                recommended_skills_text = ', '.join(recommended_skills)
-            else:
-                recommended_skills_text = str(recommended_skills)
+            recommended_skills_text = ', '.join(
+                recommended_skills
+            ) if isinstance(recommended_skills, list) else str(recommended_skills)
 
-            if isinstance(rec_course, list):
-                courses_text = ', '.join(rec_course)
-            else:
-                courses_text = str(rec_course)
+            courses_text = ', '.join(
+                rec_course
+            ) if isinstance(rec_course, list) else str(rec_course)
 
             values = (
                 resume_data.get('name', 'Unknown'),
@@ -348,6 +348,9 @@ def run():
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
 
+            cursor.execute(sql, values)
+            conn.commit()
+
             return True
 
         except mysql.connector.Error as e:
@@ -355,7 +358,7 @@ def run():
             return False
 
         finally:
-            if cursor:
+            if cursor is not None:
                 cursor.close()
             conn.close()
     
@@ -643,64 +646,131 @@ def run():
             st.warning('Upload your Resumes and Job Description Here')
     
     else:
-        ## Admin Side
+        # Admin Side
         st.success('Welcome to Admin Side')
-        # st.sidebar.subheader('**ID / Password Required!**')
 
         ad_user = st.text_input("Username")
         ad_password = st.text_input("Password", type='password')
+
         if st.button('Login'):
+
             if ad_user == 'vinut' and ad_password == 'vinut123':
-                st.success("Welcome Mr vinut !")
-                # Display Data
+
+                st.success("Welcome Mr vinut!")
+
+                # Display user data
                 conn = create_connection()
 
-            if conn is None:
-                st.stop()
+                if conn is None:
+                    st.stop()
 
-            cursor = None
+                cursor = None
 
-try:
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM resume")
-    data = cursor.fetchall()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT * FROM resume")
+                    data = cursor.fetchall()
 
-finally:
-    if cursor is not None:
-        cursor.close()
-    conn.close()
-    st.header("**User's Data**")
-    df = pd.DataFrame(data, columns=['ID', 'Name', 'Email', 'mobile_number', 'Total Page','upload_time','Predicted_Field', 'User_level','skills','recommended_skills','courses'])
-    st.dataframe(df)
-    st.markdown(get_table_download_link(df,'resume.csv','Download Report'), unsafe_allow_html=True)
-                ## Admin Side Data
-    query = 'select * from resume;'
-    conn = create_connection() 
-    plot_data = pd.read_sql(query, conn)
+                except mysql.connector.Error as e:
+                    st.error(f"Error retrieving resume data: {e}")
+                    st.stop()
 
-                ## Pie chart for predicted field recommendations
-    if not plot_data.empty and 'Predicted_Field' in plot_data.columns:
-                    field_counts = plot_data['Predicted_Field'].value_counts().reset_index()
+                finally:
+                    if cursor is not None:
+                        cursor.close()
+                    conn.close()
+
+                st.header("**User's Data**")
+
+                columns = [
+                    'ID', 'Name', 'Email', 'mobile_number',
+                    'Total Page', 'upload_time', 'Predicted_Field',
+                    'User_level', 'skills', 'recommended_skills',
+                    'courses'
+                ]
+
+                df = pd.DataFrame(data, columns=columns)
+
+                st.dataframe(df)
+
+                st.markdown(
+                    get_table_download_link(
+                        df, 'resume.csv', 'Download Report'
+                    ),
+                    unsafe_allow_html=True
+                )
+
+                # Admin dashboard data
+                plot_conn = create_connection()
+
+                if plot_conn is None:
+                    st.stop()
+
+                try:
+                    plot_data = pd.read_sql(
+                        "SELECT * FROM resume", plot_conn
+                    )
+                finally:
+                    plot_conn.close()
+
+                # Pie chart for predicted field recommendations
+                if not plot_data.empty and 'Predicted_Field' in plot_data.columns:
+
+                    field_counts = (
+                        plot_data['Predicted_Field']
+                        .value_counts()
+                        .reset_index()
+                    )
+
                     field_counts.columns = ['Predicted_Field', 'Count']
+
                     if not field_counts.empty:
-                        st.subheader("**Pie-Chart for Predicted Field Recommendation**")
-                        fig = px.pie(field_counts, values='Count', names='Predicted_Field',
-                            title='Predicted Field according to the Skills')
+                        st.subheader(
+                            "**Pie-Chart for Predicted Field Recommendation**"
+                        )
+
+                        fig = px.pie(
+                            field_counts,
+                            values='Count',
+                            names='Predicted_Field',
+                            title='Predicted Field according to the Skills'
+                        )
+
                         st.plotly_chart(fig)
-    else:
+
+                else:
                     st.info("No predicted field data available to plot.")
 
-                ### Pie chart for User's👨‍💻 Experienced Level
-    if not plot_data.empty and 'User_level' in plot_data.columns:
-                    field_counts = plot_data['User_level'].value_counts().reset_index()
-                    field_counts.columns = ['User_level','count']
-                    if not field_counts.empty:
-                        st.subheader("**pie-Chart for User's Experienced Level**")
-                        fig = px.pie(field_counts, values='count', names='User_level',title='Pie-Chart📈 for Users👨‍💻 Experienced Level')
-                        st.plotly_chart(fig)
-                    else:
-                         st.info("No user level field data available to plot.")
+                # Pie chart for user's experience level
+                if not plot_data.empty and 'User_level' in plot_data.columns:
 
-    else:
+                    field_counts = (
+                        plot_data['User_level']
+                        .value_counts()
+                        .reset_index()
+                    )
+
+                    field_counts.columns = ['User_level', 'count']
+
+                    if not field_counts.empty:
+                        st.subheader(
+                            "**Pie-Chart for User's Experienced Level**"
+                        )
+
+                        fig = px.pie(
+                            field_counts,
+                            values='count',
+                            names='User_level',
+                            title="Pie-Chart for Users' Experienced Level"
+                        )
+
+                        st.plotly_chart(fig)
+
+                else:
+                    st.info("No user level data available to plot.")
+
+            else:
                 st.error("Wrong ID & Password Provided")
+
+
 run()
