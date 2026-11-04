@@ -1,3 +1,5 @@
+from pyexpat import model
+
 import streamlit as st
 import pandas as pd
 import base64,random
@@ -12,6 +14,8 @@ from PIL import Image
 
 import nltk
 import os
+
+from thinc import model
 
 nltk_data_dir = "/tmp/nltk_data"
 
@@ -383,7 +387,31 @@ def run():
             with open(save_image_path, "rb") as f:
                 resume_text = pdf_reader(f)
 
-            resume_data = ResumeParser(save_image_path).get_extracted_data()
+            original_spacy_load = spacy.load
+
+            # Redirect pyresparser's missing custom model
+            def patched_spacy_load(model, *args, **kwargs):
+                model_path = str(model).replace("\\", "/").rstrip("/")
+
+                if model_path.endswith("/pyresparser"):
+                    return original_spacy_load(
+            "en_core_web_sm",
+            *args,
+            **kwargs
+        ) 
+                return original_spacy_load(model, *args, **kwargs)
+
+
+        # Apply temporary patch
+        spacy.load = patched_spacy_load
+        try:
+            resume_data = ResumeParser(
+        save_image_path
+    ).get_extracted_data()
+
+        finally:
+            # Restore original loader
+            spacy.load = original_spacy_load
 
             if resume_data and job_desc_file:
                 folder = create_folder()
@@ -642,8 +670,8 @@ def run():
 
             if save_resume_to_db(resume_data, reco_field, cand_level):
                 st.success("Resume saved to the database!")
-        else:
-            st.warning('Upload your Resumes and Job Description Here')
+            else:
+                st.warning('Upload your Resumes and Job Description Here')
     
     else:
         # Admin Side
